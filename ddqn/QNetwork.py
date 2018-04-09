@@ -2,8 +2,12 @@ import tensorflow as tf
 
 # Q network used by agent as function approximator to train and test.
 class QNetwork:
-    def __init__(self, learning_rate=0.01, state_size=4,
-                 action_size=2, hidden_size=10, layer_size=2,
+    def __init__(self,
+                 learning_rate=0.01,
+                 state_size=4,
+                 action_size=2,
+                 hidden_size=10,
+                 layer_size=2,
                  name='QNetwork'):
         self.name = name
         self.copy_op = None

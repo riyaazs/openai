@@ -1,13 +1,24 @@
 import tensorflow as tf
 import gym
 import numpy as np
+import time
 from openai.ddqn import QNetwork
 from openai.per import sumtree
 
 class Agent:
-    def __init__(self, session, max_steps_in_episode=1000, train_episodes=5000,
-                 gamma=0.99, decay_rate=0.00001, hidden_size=256, learning_rate=0.0001,
-                 memory_size=100000, batch_size=64, layer_size = 2, env_name = "LunarLander-v2",
+    def __init__(self,
+                 session,
+                 max_steps_in_episode=1000,
+                 train_episodes=5000,
+                 gamma=0.99,
+                 decay_rate=0.00001,
+                 hidden_size=256,
+                 learning_rate=0.00001,
+                 update_freq = 100,
+                 memory_size=100000,
+                 batch_size=64,
+                 layer_size = 2,
+                 env_name = "LunarLander-v2",
                  chk_pt_name ="checkpoints/lunar_lander.ckpt"):
         self.session = session
         self.max_steps = max_steps_in_episode
@@ -24,12 +35,16 @@ class Agent:
         self.env_name = env_name
         self.env = gym.make(self.env_name)
         self.env.reset()
-        self.mainQN = QNetwork.QNetwork(name='main', hidden_size=hidden_size,
-                                        layer_size = layer_size, learning_rate=learning_rate,
+        self.mainQN = QNetwork.QNetwork(name='main',
+                                        hidden_size=hidden_size,
+                                        layer_size = layer_size,
+                                        learning_rate=learning_rate,
                                         state_size = self.env.observation_space.shape[0],
                                         action_size = self.env.action_space.n)
-        self.targetQN = QNetwork.QNetwork(name='target', hidden_size=hidden_size,
-                                          layer_size=layer_size, learning_rate=learning_rate,
+        self.targetQN = QNetwork.QNetwork(name='target',
+                                          hidden_size=hidden_size,
+                                          layer_size=layer_size,
+                                          learning_rate=learning_rate,
                                           state_size = self.env.observation_space.shape[0],
                                           action_size = self.env.action_space.n)
         self.memory = sumtree.SumTree(capacity=memory_size)
@@ -53,7 +68,7 @@ class Agent:
             sess.run(op)
 
     # Pretrain before experience replay buffer has minimum required data.
-    def pretrain(self):
+    def __pretrain(self):
         pretrain_length = self.batch_size
         # Make a bunch of random actions and store the experiences
         # Needed for experience replay.
@@ -79,11 +94,11 @@ class Agent:
                 state = next_state
 
     # Compute moving average of the rewards obtained in episodes.
-    def running_mean(self, x, N):
+    def __running_mean(self, x, N):
         cumsum = np.cumsum(np.insert(x, 0, 0))
         return (cumsum[N:] - cumsum[:-N]) / N
 
-    def train(self):
+    def __train(self):
        # Initialize variables
         self.session.run(tf.global_variables_initializer())
         step = 0
@@ -161,9 +176,6 @@ class Agent:
 
                 targets = rewards + self.gamma * np.max(target_Qs, axis=1)
 
-                errors = np.abs(targets - np.max(current_Qs, axis=1)) + 1
-
-                self.memory.update(indices, errors)
 
                 loss, _ = self.session.run([self.mainQN.loss, self.mainQN.opt],
                                feed_dict={self.mainQN.inputs_: states,
@@ -205,11 +217,33 @@ class Agent:
                     t += 1
 
     # trains and tests agent on 100 episode.
-    def run(self):
-        self.pretrain()
-        self.train()
+    def __run(self):
+        self.__pretrain()
+        self.__train()
         self.test(100)
         eps, rews = np.array(self.rewards_list).T
         smoothed_train_rews = self.running_mean(rews, 100)
         smoothed_train_eps = eps[-len(smoothed_train_rews):]
         return (smoothed_train_eps, smoothed_train_rews, self.test_rewards_list)
+
+    def run_plt(self):
+        time_str = str(time.time())
+        train_episodes_num_1, train_smoothed_reward_1, test_rewards_1 = self.__run()
+        plt.plot(train_episodes_num_1, train_smoothed_reward_1,
+                 label="batch size=64, learning rate=0.0001, layers=2, hidden units=256 each")
+        plt.title("Training stats with 100 episode moving average reward")
+        plt.xlabel('Episode')
+        plt.ylabel('Total Reward')
+        plt.legend(loc=4)
+        trainfig = "train-" + time_str + ".png"
+        plt.savefig(trainfig)
+
+        plt.clf()
+        plt.plot(range(1, len(test_rewards_1) + 1), test_rewards_1,
+                 label="batch size=64, learning rate=0.0001 layers=2, hidden units=256 each")
+        plt.title("Test run rewards per episode")
+        plt.xlabel('Episode')
+        plt.ylabel('Total Reward')
+        plt.legend(loc=4)
+        testfig = "test-" + time_str + ".png"
+        plt.savefig(testfig)
