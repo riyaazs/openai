@@ -1,15 +1,12 @@
 import tensorflow as tf
-import time
 import gym
-import matplotlib.pyplot as plt
 import numpy as np
 from openai.ddqn import QNetwork
 from openai.per import sumtree
 
 class Agent:
-    def __init__(self, session, max_steps_in_episode=1000, train_episodes=5000, beta0=0.4,
-                 per_alpha = 0.2, per_epsilon=1E-6, gamma=0.99, decay_rate=0.00001,
-                 hidden_size=256, learning_rate=0.00001, update_freq = 100,
+    def __init__(self, session, max_steps_in_episode=1000, train_episodes=5000,
+                 gamma=0.99, decay_rate=0.00001, hidden_size=256, learning_rate=0.0001,
                  memory_size=100000, batch_size=64, layer_size = 2, env_name = "LunarLander-v2",
                  chk_pt_name ="checkpoints/lunar_lander.ckpt"):
         self.session = session
@@ -41,14 +38,9 @@ class Agent:
         self.rewards_list = []
         self.test_rewards_list = []
         self.trainables = tf.trainable_variables()
-        self.targetOps = self.__updateTargetGraph(self.trainables, 1)
-        self.per_beta0 = beta0
-        self.per_beta = self.per_beta0
-        self.per_alpha = per_alpha
-        self.per_epsilon = per_epsilon
-        self.update_freq = update_freq
+        self.targetOps = self.updateTargetGraph(self.trainables, 1)
 
-    def __updateTargetGraph(self, tfVars, tau):
+    def updateTargetGraph(self, tfVars, tau):
         total_vars = len(tfVars)
         op_holder = []
         for idx, var in enumerate(tfVars[0:total_vars // 2]):
@@ -56,7 +48,7 @@ class Agent:
                 (var.value() * tau) + ((1 - tau) * tfVars[idx + total_vars // 2].value())))
         return op_holder
 
-    def __updateTarget(self, op_holder, sess):
+    def updateTarget(self, op_holder, sess):
         for op in op_holder:
             sess.run(op)
 
@@ -75,7 +67,7 @@ class Agent:
                 # The simulation fails so no next state
                 next_state = np.zeros(self.env.observation_space.shape[0])
                 # Add experience to memory
-                self.memory.add(self.per_epsilon, (state, action, reward, next_state))
+                self.memory.add(1.0, (state, action, reward, next_state))
 
                 # Start new episode
                 self.env.reset()
@@ -83,32 +75,13 @@ class Agent:
                 state, reward, done, _ = self.env.step(self.env.action_space.sample())
             else:
                 # Add experience to memory
-                self.memory.add(self.per_epsilon, (state, action, reward, next_state))
+                self.memory.add(1.0, (state, action, reward, next_state))
                 state = next_state
 
     # Compute moving average of the rewards obtained in episodes.
     def running_mean(self, x, N):
         cumsum = np.cumsum(np.insert(x, 0, 0))
         return (cumsum[N:] - cumsum[:-N]) / N
-
-    def __retrieve_experience(self):
-        idx = None
-        priorities = None
-        w = None
-
-        # Extract a batch of random transitions from the replay memory
-        idx, priorities, experience = self.memory.sample(self.batch_size)
-        sampling_probabilities = priorities / self.memory.total()
-        w = np.power(self.memory.n_entries * sampling_probabilities, -self.per_beta)
-        w = w / w.max()
-
-        return idx, priorities, w, experience
-
-    def anneal_per_importance_sampling(self, episode_num):
-        self.per_beta = self.per_beta0 + episode_num * (1 - self.per_beta0) / self.train_episodes
-
-    def error2priority(self, errors):
-        return np.power(np.abs(errors) + self.per_epsilon, self.per_alpha)
 
     def train(self):
        # Initialize variables
@@ -137,7 +110,6 @@ class Agent:
                 next_state, reward, done, _ = self.env.step(action)
 
                 total_reward += reward
-                self.anneal_per_importance_sampling(ep)
 
                 if done:
                     # the episode ends so no next state
@@ -151,7 +123,7 @@ class Agent:
                             'Explore P: {:.4f}'.format(explore_p))
                     self.rewards_list.append((ep, total_reward))
                     # Add experience to memory
-                    self.memory.add(self.per_epsilon, (state, action, reward, next_state))
+                    self.memory.add(1.0, (state, action, reward, next_state))
 
                     # Start new episode
                     self.env.reset()
@@ -160,12 +132,14 @@ class Agent:
 
                 else:
                     # Add experience to memory
-                    self.memory.add(self.per_epsilon, (state, action, reward, next_state))
+                    self.memory.add(1.0, (state, action, reward, next_state))
                     state = next_state
                     t += 1
 
                 # Sample mini-batch from memory
-                indices, priorities, w, batch = self.__retrieve_experience()
+                exp_sample = self.memory.sample(self.batch_size)
+                indices = exp_sample[0]
+                batch = exp_sample[2]
                 states = np.array([each[0] for each in batch])
                 actions = np.array([each[1] for each in batch])
                 rewards = np.array([each[2] for each in batch])
@@ -178,6 +152,7 @@ class Agent:
                 else:
                     QN = self.targetQN
 
+                current_Qs = self.session.run(QN.output, feed_dict={QN.inputs_: states})
                 target_Qs = self.session.run(QN.output, feed_dict={QN.inputs_: next_states})
 
                 # Set target_Qs to 0 for states where episode ends
@@ -185,18 +160,17 @@ class Agent:
                 target_Qs[episode_ends] = np.zeros(self.env.action_space.n)
 
                 targets = rewards + self.gamma * np.max(target_Qs, axis=1)
-                current_Qs, loss, _ = self.session.run([self.mainQN.output, self.mainQN.loss, self.mainQN.opt],
-                               feed_dict={self.mainQN.inputs_: states,
-                                          self.mainQN.targetQs_: targets,
-                                          self.mainQN.actions_: actions,
-                                          self.mainQN.rho : np.ones(self.batch_size)})
 
-                errors = self.error2priority(np.abs(targets - np.max(current_Qs, axis=1)))
+                errors = np.abs(targets - np.max(current_Qs, axis=1)) + 1
 
                 self.memory.update(indices, errors)
 
-                if ep%self.update_freq==0 :
-                    self.__updateTarget(self.targetOps, self.session)
+                loss, _ = self.session.run([self.mainQN.loss, self.mainQN.opt],
+                               feed_dict={self.mainQN.inputs_: states,
+                                          self.mainQN.targetQs_: targets,
+                                          self.mainQN.actions_: actions})
+                if ep%100==0 :
+                    self.updateTarget(self.targetOps, self.session)
         self.saver.save(self.session, self.chk_pt_name)
 
     def test(self, test_episodes):
@@ -239,25 +213,3 @@ class Agent:
         smoothed_train_rews = self.running_mean(rews, 100)
         smoothed_train_eps = eps[-len(smoothed_train_rews):]
         return (smoothed_train_eps, smoothed_train_rews, self.test_rewards_list)
-
-    def run_and_plt(self):
-        time_str = str(time.time())
-        train_episodes_num_1, train_smoothed_reward_1, test_rewards_1 = self.run()
-        plt.plot(train_episodes_num_1, train_smoothed_reward_1,
-                 label="batch size=64, learning rate=0.0001, layers=2, hidden units=256 each")
-        plt.title("Training stats with 100 episode moving average reward")
-        plt.xlabel('Episode')
-        plt.ylabel('Total Reward')
-        plt.legend(loc=4)
-        trainfig = "train-" + time_str + ".png"
-        plt.savefig(trainfig)
-
-        plt.clf()
-        plt.plot(range(1, len(test_rewards_1) + 1), test_rewards_1,
-                 label="batch size=64, learning rate=0.0001 layers=2, hidden units=256 each")
-        plt.title("Test run rewards per episode")
-        plt.xlabel('Episode')
-        plt.ylabel('Total Reward')
-        plt.legend(loc=4)
-        testfig = "test-" + time_str + ".png"
-        plt.savefig(testfig)

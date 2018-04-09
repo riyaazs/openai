@@ -35,7 +35,5 @@ class QNetwork:
             # one value from output (per row) according to the one-hot encoded actions.
             self.Q = tf.reduce_sum(tf.multiply(self.output, one_hot_actions), axis=1)
 
-            self.rho = tf.placeholder(tf.float32, [None], name="wis_weights")
-            self.SE = tf.square(self.targetQs_ - self.Q)
-            self.loss = tf.reduce_mean(tf.multiply(self.rho, self.SE), name="loss")
+            self.loss = tf.reduce_mean(tf.square(self.targetQs_ - self.Q))
             self.opt = tf.train.AdamOptimizer(learning_rate).minimize(self.loss)
