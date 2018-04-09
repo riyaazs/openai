@@ -4,6 +4,7 @@ import numpy as np
 import time
 from openai.ddqn import QNetwork
 from openai.per import sumtree
+import matplotlib.pyplot as plt
 
 class Agent:
     def __init__(self,
@@ -222,7 +223,7 @@ class Agent:
         self.__train()
         self.test(100)
         eps, rews = np.array(self.rewards_list).T
-        smoothed_train_rews = self.running_mean(rews, 100)
+        smoothed_train_rews = self.__running_mean(rews, 100)
         smoothed_train_eps = eps[-len(smoothed_train_rews):]
         return (smoothed_train_eps, smoothed_train_rews, self.test_rewards_list)
 
